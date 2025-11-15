@@ -35,8 +35,8 @@ make clean
 # -------------------------------------------------------
 # 2. Build writer (native)
 # -------------------------------------------------------
-echo "Compiling writer application (native)..."
-make
+#echo "Compiling writer application (native)..."
+#make
 
 # -------------------------------------------------------
 # 3. Create the directory BEFORE calling writer
