@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # Check for correct number of arguments
 if [ $# -ne 2 ]; then
@@ -27,4 +27,3 @@ match_count=$(grep -r "$searchstr" "$filesdir" 2>/dev/null | wc -l)
 echo "The number of files are $file_count and the number of matching lines are $match_count"
 
 exit 0
-
