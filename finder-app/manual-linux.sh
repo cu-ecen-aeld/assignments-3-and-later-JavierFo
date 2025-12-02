@@ -206,7 +206,9 @@ fi
 mkdir -p "${OUTDIR}/rootfs/home"
 mkdir -p "${OUTDIR}/rootfs/home/conf"
 
-sudo chown "${USER}:${USER}" "${OUTDIR}/rootfs/home"
+#sudo chown "${USER}:${USER}" "${OUTDIR}/rootfs/home"
+CURRENT_USER=$(whoami)
+sudo chown "${CURRENT_USER}:${CURRENT_USER}" "${OUTDIR}/rootfs/home"
 
 WRITER_BIN="${OUTDIR}/rootfs/home/writer"
 
