@@ -1,6 +1,10 @@
+CROSS_COMPILE ?=
+CC = $(CROSS_COMPILE)gcc
 
-all:
-	$(CC) -o ./writer ./writer.c
+all: writer
+
+writer: writer.c
+	$(CC) writer.c -o writer
 
 clean:
 	rm -f writer
