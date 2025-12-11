@@ -34,7 +34,7 @@ rm -rf "${WRITEDIR}"
 # create $WRITEDIR if not assignment3
 assignment=`cat /etc/finder-app/conf/assignment.txt`
 
-if [ $assignment != 'assignment2' ]
+if [ $assignment != 'assignment1' ]
 then
 	mkdir -p "$WRITEDIR"
 
@@ -58,13 +58,13 @@ do
 done
 
 OUTPUTSTRING=$(./finder.sh "$WRITEDIR" "$WRITESTR")
+echo ${OUTPUTSTRING} > /tmp/assignment4-result.txt
 
 # remove temporary directories
 rm -rf /tmp/aeld-data
 
 set +e
 echo ${OUTPUTSTRING} | grep "${MATCHSTR}"
-echo ${OUTPUTSTRING} > /tmp/assignment4-result.txt
 if [ $? -eq 0 ]; then
 	echo "success"
 	exit 0
