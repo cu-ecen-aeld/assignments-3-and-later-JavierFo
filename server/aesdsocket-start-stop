@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# Path to the executable
+DAEMON=/usr/bin/aesdsocket
+# Name for start-stop-daemon to track
+NAME=aesdsocket
+# Arguments for the daemon (daemon mode)
+DAEMON_ARGS="-d"
+
+case "$1" in
+    start)
+        echo "Starting $NAME"
+        start-stop-daemon -S -n $NAME -a $DAEMON -- $DAEMON_ARGS
+        ;;
+    stop)
+        echo "Stopping $NAME"
+        # Sends SIGTERM by default, which triggers your program's cleanup
+        start-stop-daemon -K -n $NAME
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
