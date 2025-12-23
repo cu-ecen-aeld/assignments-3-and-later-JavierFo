@@ -1,26 +1,21 @@
-# Variables
+# Use ?= so that if Buildroot passes CC, we use theirs. 
+# Otherwise, we default to local gcc.
 CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Werror -g
-LDFLAGS ?= 
 TARGET = aesdsocket
-SRC = aesdsocket.c
-OBJ = $(SRC:.c=.o)
-
-# Default target
-default: all
+OBJS = aesdsocket.o
 
 all: $(TARGET)
 
-# Link the object files into the executable
-$(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) $(OBJ) -o $(TARGET) $(LDFLAGS)
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
 
-# Compile source files into object files
+# By using $(CC) here, it will always use the value 
+# defined at the top of the file.
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Clean target to remove the executable and object files
 clean:
-	rm -f $(TARGET) $(OBJ)
+	rm -f $(TARGET) $(OBJS)
 
-.PHONY: all default clean
+.PHONY: all clean
