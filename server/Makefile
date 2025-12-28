@@ -8,12 +8,12 @@ OBJS = aesdsocket.o
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LDFLAGS) -pthread
 
 # By using $(CC) here, it will always use the value 
 # defined at the top of the file.
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@ -pthread
 
 clean:
 	rm -f $(TARGET) $(OBJS)

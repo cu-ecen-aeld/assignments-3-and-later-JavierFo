@@ -61,6 +61,10 @@ void signal_handler(int signo) {
 // This thread runs in the background and writes the time every 10 seconds.
 void *timestamp_thread_func(void *arg) {
     while (!signal_caught) {
+        // Sleep for 10 seconds
+        // Note: For faster exit on signal, one might use nanosleep in a loop 
+        // or pthread_cond_timedwait, but sleep(10) is sufficient for this requirement.
+        sleep(10);
 
         if (signal_caught) break;
 
@@ -99,11 +103,6 @@ void *timestamp_thread_func(void *arg) {
             pthread_mutex_unlock(&file_mutex);
         }
         // --- CRITICAL SECTION END ---
-        
-        // Sleep for 10 seconds
-        // Note: For faster exit on signal, one might use nanosleep in a loop 
-        // or pthread_cond_timedwait, but sleep(10) is sufficient for this requirement.
-        sleep(10);
     }
     return NULL;
 }
@@ -158,11 +157,10 @@ void *thread_func(void *thread_param) {
                 char send_buf[BUFFER_SIZE];
                 ssize_t bytes_read;
                 while ((bytes_read = read(file_fd, send_buf, BUFFER_SIZE)) > 0) {
-                    send(data->client_fd, send_buf, bytes_read, MSG_NOSIGNAL);
-                    /*if (send(data->client_fd, send_buf, bytes_read, 0) == -1) {
+                    if (send(data->client_fd, send_buf, bytes_read, 0) == -1) {
                         syslog(LOG_ERR, "Send failed: %s", strerror(errno));
                         break;
-                    }*/
+                    }
                 }
                 close(file_fd);
             }
@@ -187,7 +185,6 @@ int main(int argc, char *argv[]) {
     int status;
     bool daemon_mode = false;
     pthread_t timestamp_thread_id; 
-    unlink(DATA_FILE);
 
     if (argc == 2 && strcmp(argv[1], "-d") == 0) {
         daemon_mode = true;
@@ -204,7 +201,6 @@ int main(int argc, char *argv[]) {
     }
 
     SLIST_INIT(&head);
-    //signal(SIGPIPE, SIG_IGN);
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -259,26 +255,26 @@ int main(int argc, char *argv[]) {
             close(dev_null);
         }
     }
-    
-        // --- START TIMESTAMP THREAD ---
-    // We start this after daemonization so it runs in the background process.
-    if (pthread_create(&timestamp_thread_id, NULL, timestamp_thread_func, NULL) != 0) {
-        syslog(LOG_ERR, "Failed to create timestamp thread");
-        // We continue even if this fails, though typically we might want to exit.
-    }
 
     if (listen(server_socket_fd, BACKLOG) == -1) {
         syslog(LOG_ERR, "Listen failed: %s", strerror(errno));
         close(server_socket_fd);
         return -1;
     }
-    
+
+    // --- START TIMESTAMP THREAD ---
+    // We start this after daemonization so it runs in the background process.
+    if (pthread_create(&timestamp_thread_id, NULL, timestamp_thread_func, NULL) != 0) {
+        syslog(LOG_ERR, "Failed to create timestamp thread");
+        // We continue even if this fails, though typically we might want to exit.
+    }
+
     // Main Accept Loop
     while (!signal_caught) {
         client_addr_size = sizeof client_addr;
         int client_fd = accept(server_socket_fd, (struct sockaddr *)&client_addr, &client_addr_size);
         
-        //if (signal_caught) break;
+        if (signal_caught) break;
 
         if (client_fd == -1) {
             if (errno == EINTR) continue;
@@ -364,8 +360,7 @@ int main(int argc, char *argv[]) {
     }
 
     pthread_mutex_destroy(&file_mutex);
-    //unlink(DATA_FILE);
-    //remove(DATA_FILE);
+    remove(DATA_FILE);
     closelog();
     
     return 0;
