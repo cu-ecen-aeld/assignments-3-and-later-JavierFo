@@ -16,19 +16,8 @@
 #include <sys/queue.h>
 #include <time.h>
 
-// --- MODIFICATION START: Build Switch Configuration ---
-#ifndef USE_AESD_CHAR_DEVICE
-#define USE_AESD_CHAR_DEVICE 1
-#endif
-
 #define PORT "9000"
-
-#if USE_AESD_CHAR_DEVICE
-    #define DATA_FILE "/dev/aesdchar"
-#else
-    #define DATA_FILE "/var/tmp/aesdsocketdata"
-#endif
-
+#define DATA_FILE "/var/tmp/aesdsocketdata"
 #define BACKLOG 10
 #define BUFFER_SIZE 1024
 
@@ -69,8 +58,7 @@ void signal_handler(int signo) {
 }
 
 // --- TIMESTAMP THREAD FUNCTION ---
-// Modified: Only compiled/run if NOT using the char device
-#if !USE_AESD_CHAR_DEVICE
+// This thread runs in the background and writes the time every 10 seconds.
 void *timestamp_thread_func(void *arg) {
     while (!signal_caught) {
 
@@ -85,13 +73,15 @@ void *timestamp_thread_func(void *arg) {
         time(&rawtime);
         info = localtime(&rawtime);
 
-        // Format time per RFC 2822
+        // Format time per RFC 2822: "Day, DD Mon YYYY HH:MM:SS Zone"
+        // Example: "Thu, 27 Dec 2025 04:26:51 -0600"
         strftime(time_str, sizeof(time_str), "%a, %d %b %Y %H:%M:%S %z", info);
         
         // Prepare final string: "timestamp:time\n"
         snprintf(output_str, sizeof(output_str), "timestamp:%s\n", time_str);
 
         // --- CRITICAL SECTION START ---
+        // Lock mutex to ensure we don't write while a connection thread is writing/reading
         if (pthread_mutex_lock(&file_mutex) != 0) {
             syslog(LOG_ERR, "Timestamp thread: Mutex lock failed");
         } else {
@@ -110,11 +100,13 @@ void *timestamp_thread_func(void *arg) {
         }
         // --- CRITICAL SECTION END ---
         
+        // Sleep for 10 seconds
+        // Note: For faster exit on signal, one might use nanosleep in a loop 
+        // or pthread_cond_timedwait, but sleep(10) is sufficient for this requirement.
         sleep(10);
     }
     return NULL;
 }
-#endif
 
 // Thread function to handle client connection
 void *thread_func(void *thread_param) {
@@ -150,7 +142,6 @@ void *thread_func(void *thread_param) {
         if (pthread_mutex_lock(data->mutex) != 0) {
             syslog(LOG_ERR, "Mutex lock failed");
         } else {
-            // Modified: Lazy open. File is only opened here, when accessed.
             int file_fd = open(DATA_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (file_fd == -1) {
                 syslog(LOG_ERR, "Could not open data file: %s", strerror(errno));
@@ -168,6 +159,10 @@ void *thread_func(void *thread_param) {
                 ssize_t bytes_read;
                 while ((bytes_read = read(file_fd, send_buf, BUFFER_SIZE)) > 0) {
                     send(data->client_fd, send_buf, bytes_read, MSG_NOSIGNAL);
+                    /*if (send(data->client_fd, send_buf, bytes_read, 0) == -1) {
+                        syslog(LOG_ERR, "Send failed: %s", strerror(errno));
+                        break;
+                    }*/
                 }
                 close(file_fd);
             }
@@ -191,13 +186,8 @@ int main(int argc, char *argv[]) {
     socklen_t client_addr_size;
     int status;
     bool daemon_mode = false;
-    
-    // Modified: thread_id variable only needed if not using char device
-#if !USE_AESD_CHAR_DEVICE
     pthread_t timestamp_thread_id; 
-    // Modified: Only unlink the file if we are using the regular file system
     unlink(DATA_FILE);
-#endif
 
     if (argc == 2 && strcmp(argv[1], "-d") == 0) {
         daemon_mode = true;
@@ -214,6 +204,7 @@ int main(int argc, char *argv[]) {
     }
 
     SLIST_INIT(&head);
+    //signal(SIGPIPE, SIG_IGN);
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -269,13 +260,12 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    // --- START TIMESTAMP THREAD ---
-    // Modified: Only start timestamp thread if we are NOT using the char device
-#if !USE_AESD_CHAR_DEVICE
+        // --- START TIMESTAMP THREAD ---
+    // We start this after daemonization so it runs in the background process.
     if (pthread_create(&timestamp_thread_id, NULL, timestamp_thread_func, NULL) != 0) {
         syslog(LOG_ERR, "Failed to create timestamp thread");
+        // We continue even if this fails, though typically we might want to exit.
     }
-#endif
 
     if (listen(server_socket_fd, BACKLOG) == -1) {
         syslog(LOG_ERR, "Listen failed: %s", strerror(errno));
@@ -288,6 +278,8 @@ int main(int argc, char *argv[]) {
         client_addr_size = sizeof client_addr;
         int client_fd = accept(server_socket_fd, (struct sockaddr *)&client_addr, &client_addr_size);
         
+        //if (signal_caught) break;
+
         if (client_fd == -1) {
             if (errno == EINTR) continue;
             syslog(LOG_ERR, "Accept failed: %s", strerror(errno));
@@ -359,10 +351,8 @@ int main(int argc, char *argv[]) {
     }
     
     // Join timestamp thread
-    // Modified: Only join if the thread was created
-#if !USE_AESD_CHAR_DEVICE
+    // Note: This may wait up to 10 seconds for the sleep() to finish.
     pthread_join(timestamp_thread_id, NULL);
-#endif
 
     // Join connection threads
     while (!SLIST_EMPTY(&head)) {
@@ -374,13 +364,10 @@ int main(int argc, char *argv[]) {
     }
 
     pthread_mutex_destroy(&file_mutex);
-    
-    // Modified: Only remove the file if we are using the file system (NOT the device)
-#if !USE_AESD_CHAR_DEVICE
-    unlink(DATA_FILE);
-#endif
-
+    //unlink(DATA_FILE);
+    //remove(DATA_FILE);
     closelog();
     
     return 0;
 }
+
