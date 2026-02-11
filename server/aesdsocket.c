@@ -15,6 +15,8 @@
 #include <pthread.h>
 #include <sys/queue.h>
 #include <time.h>
+#include <sys/ioctl.h>
+#include "aesd_ioctl.h"
 
 // --- MODIFICATION START: Build Switch Configuration ---
 #ifndef USE_AESD_CHAR_DEVICE
@@ -146,24 +148,39 @@ void *thread_func(void *thread_param) {
     }
 
     if (packet_complete && packet_buffer != NULL) {
-        // --- CRITICAL SECTION START ---
         if (pthread_mutex_lock(data->mutex) != 0) {
             syslog(LOG_ERR, "Mutex lock failed");
         } else {
-            // Modified: Lazy open. File is only opened here, when accessed.
-            int file_fd = open(DATA_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            int file_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
             if (file_fd == -1) {
                 syslog(LOG_ERR, "Could not open data file: %s", strerror(errno));
             } else {
-                if (write(file_fd, packet_buffer, current_packet_size) == -1) {
-                    syslog(LOG_ERR, "File write failed: %s", strerror(errno));
+                // --- NEW SEEK HANDLING LOGIC ---
+                const char *seek_prefix = "AESDCHAR_IOCSEEKTO:";
+                if (strncmp(packet_buffer, seek_prefix, strlen(seek_prefix)) == 0) {
+                    struct aesd_seekto seek_args;
+                    // Parse X and Y from "AESDCHAR_IOCSEEKTO:X,Y"
+                    if (sscanf(packet_buffer + strlen(seek_prefix), "%u,%u", 
+                               &seek_args.write_cmd, &seek_args.write_cmd_offset) == 2) {
+                        
+                        syslog(LOG_DEBUG, "Performing IOCTL seek to cmd %u, offset %u", 
+                               seek_args.write_cmd, seek_args.write_cmd_offset);
+
+                        if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seek_args) != 0) {
+                            syslog(LOG_ERR, "IOCTL seek failed: %s", strerror(errno));
+                        }
+                        // Note: We do NOT write the command string to the device.
+                    }
+                } else {
+                    // Standard behavior: write the packet to the device
+                    if (write(file_fd, packet_buffer, current_packet_size) == -1) {
+                        syslog(LOG_ERR, "File write failed: %s", strerror(errno));
+                    }
                 }
-                close(file_fd);
-            }
-            
-            // --- READ AND SEND BACK ---
-            file_fd = open(DATA_FILE, O_RDONLY);
-            if (file_fd != -1) {
+
+                // --- READ AND SEND BACK ---
+                // Important: We do NOT re-open the file. Re-opening would reset 
+                // the file offset to 0, losing the result of our ioctl seek.
                 char send_buf[BUFFER_SIZE];
                 ssize_t bytes_read;
                 while ((bytes_read = read(file_fd, send_buf, BUFFER_SIZE)) > 0) {
@@ -171,9 +188,7 @@ void *thread_func(void *thread_param) {
                 }
                 close(file_fd);
             }
-            
             pthread_mutex_unlock(data->mutex);
-            // --- CRITICAL SECTION END ---
         }
     }
 

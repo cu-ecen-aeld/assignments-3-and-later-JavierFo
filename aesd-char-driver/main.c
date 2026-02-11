@@ -22,6 +22,7 @@
 #include <linux/mutex.h>
 #include "aesdchar.h"
 #include "aesd-circular-buffer.h"
+#include "aesd_ioctl.h"
 
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
@@ -165,12 +166,167 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    struct aesd_dev *dev = filp->private_data;
+    loff_t new_pos = 0;
+    size_t total_size = 0;
+    struct aesd_buffer_entry *entry;
+    int index;
+
+    // Lock to protect the buffer while we calculate size and update position
+    if (mutex_lock_interruptible(&dev->lock)) {
+        return -ERESTARTSYS;
+    }
+
+    // Calculate the total size of all data in the circular buffer
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->buffer, index) {
+        if (entry->buffptr) {
+            total_size += entry->size;
+        }
+    }
+
+    // Determine the new position based on the whence parameter
+    switch (whence) {
+        case SEEK_SET:
+            new_pos = offset;
+            break;
+        case SEEK_CUR:
+            new_pos = filp->f_pos + offset;
+            break;
+        case SEEK_END:
+            new_pos = total_size + offset;
+            break;
+        default:
+            mutex_unlock(&dev->lock);
+            return -EINVAL;
+    }
+
+    // Check if the new position is valid (cannot be negative)
+    // Note: We allow seeking beyond total_size (creating holes) as per standard behavior,
+    // though read() will just return 0 (EOF) in that case.
+    if (new_pos < 0) {
+        mutex_unlock(&dev->lock);
+        return -EINVAL;
+    }
+
+    // Update the file position
+    filp->f_pos = new_pos;
+
+    mutex_unlock(&dev->lock);
+    
+    return new_pos;
+}
+
+/**
+ * Perform the seek based on write_cmd (entry index) and write_cmd_offset (offset within entry)
+ */
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_seekto seek_args;
+    struct aesd_buffer_entry *entry;
+    long retval = 0;
+    uint32_t i;
+    uint8_t index;
+    size_t new_pos = 0;
+
+    // 1. Check for valid command
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+    if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+
+    // 2. Switch based on the command
+    switch (cmd) {
+        case AESDCHAR_IOCSEEKTO:
+            // Copy arguments from user space
+            if (copy_from_user(&seek_args, (const void __user *)arg, sizeof(seek_args))) {
+                return -EFAULT;
+            }
+
+            // Lock to protect buffer state
+            if (mutex_lock_interruptible(&dev->lock)) {
+                return -ERESTARTSYS;
+            }
+
+            // 3. Iterate to find the target command (write_cmd)
+            // We start at out_offs (the oldest entry) and walk forward 'write_cmd' times.
+            // While walking, we sum up the sizes of skipped entries to calculate the byte offset.
+            
+            index = dev->buffer.out_offs;
+            
+            // Check if the requested command index is potentially valid (max 10 entries)
+            if (seek_args.write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+                 mutex_unlock(&dev->lock);
+                 return -EINVAL;
+            }
+
+            // We also need to check if the buffer actually has that many entries.
+            // Since we don't track "count" explicitly, we can just walk and see if we hit NULL.
+            // However, a safer way is to ensure we don't walk past in_offs if not full.
+            
+            // Let's walk the buffer to calculate the offset of the start of the requested command.
+            for (i = 0; i < seek_args.write_cmd; i++) {
+                // If the entry is valid (buffptr is not NULL), add its size
+                if (dev->buffer.entry[index].buffptr == NULL) {
+                    mutex_unlock(&dev->lock);
+                    return -EINVAL; // User asked for command #5 but we only have 3
+                }
+                
+                new_pos += dev->buffer.entry[index].size;
+                
+                // Advance to next entry in circular buffer
+                index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
+                // If we wrapped around to in_offs and buffer isn't full, we ran out of data
+                if (index == dev->buffer.in_offs && !dev->buffer.full) {
+                    mutex_unlock(&dev->lock);
+                    return -EINVAL;
+                }
+            }
+
+            // 4. Validate the offset WITHIN the target command
+            // At this point, 'index' points to the specific entry requested.
+            entry = &dev->buffer.entry[index];
+            
+            // Ensure the entry exists (just in case)
+            if (entry->buffptr == NULL) {
+                mutex_unlock(&dev->lock);
+                return -EINVAL;
+            }
+
+            // Check if the requested offset is larger than the command's size
+            if (seek_args.write_cmd_offset >= entry->size) {
+                mutex_unlock(&dev->lock);
+                return -EINVAL;
+            }
+
+            // 5. Calculate Final Position and Update
+            // The position is (Start of Command) + (Offset within Command)
+            new_pos += seek_args.write_cmd_offset;
+            
+            filp->f_pos = new_pos;
+            
+            PDEBUG("ioctl seek: cmd %u, offset %u -> f_pos %zu", 
+                   seek_args.write_cmd, seek_args.write_cmd_offset, new_pos);
+
+            mutex_unlock(&dev->lock);
+            break;
+
+        default:
+            return -ENOTTY;
+    }
+
+    return retval;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
